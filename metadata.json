@@ -1,0 +1,6 @@
+{
+  "name": "ClearLedger — Personal Expense Tracker",
+  "description": "Minimalist financial dashboard for tracking income, expenses, transaction history, spending analytics, and monthly budgets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
