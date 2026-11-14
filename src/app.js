@@ -6,10 +6,16 @@
 (function () {
   'use strict';
 
+  const API_BASE =
+    typeof window !== 'undefined' && window.location.protocol === 'file:'
+      ? 'http://localhost:3000/api'
+      : '/api';
+
   const STORAGE_KEYS = {
     TRANSACTIONS: 'clearledger_transactions_v1',
     BUDGET: 'clearledger_monthly_budget_v1',
     INITIALIZED: 'clearledger_initialized_v1',
+    MIGRATED: 'clearledger_backend_migrated_v1',
   };
 
   const CATEGORIES = {
@@ -59,6 +65,9 @@
   const state = {
     transactions: [],
     monthlyBudget: 3200,
+    currentBudgetId: null,
+    isLoading: false,
+    backendError: null,
     activeView: 'dashboard',
     activeMonth: getTodayMonthKey(),
     filters: {
@@ -126,11 +135,11 @@
   function formatCurrency(amount) {
     const num = Number(amount) || 0;
     const abs = Math.abs(num);
-    const formatted = abs.toLocaleString('en-US', {
+    const formatted = abs.toLocaleString('en-IN', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
-    return num < 0 ? `-$${formatted}` : `$${formatted}`;
+    return num < 0 ? `-₹${formatted}` : `₹${formatted}`;
   }
 
   function generateId() {
@@ -216,45 +225,210 @@
     ];
   }
 
-  function loadStateFromStorage() {
-    try {
-      const initialized = localStorage.getItem(STORAGE_KEYS.INITIALIZED);
-      const rawTx = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
-      const rawBudget = localStorage.getItem(STORAGE_KEYS.BUDGET);
+  /* -------------------------------------------------------------------------- */
+  /* Loading & Error States (Requirement 32)                                    */
+  /* -------------------------------------------------------------------------- */
 
-      if (!initialized) {
-        state.transactions = buildSeedTransactions();
-        state.monthlyBudget = 3200;
-        saveTransactions();
-        saveBudget();
-        localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
-      } else {
-        state.transactions = rawTx ? JSON.parse(rawTx) : [];
-        if (!Array.isArray(state.transactions)) {
-          state.transactions = [];
+  function showLoadingState(isLoading) {
+    state.isLoading = isLoading;
+    const banner = document.getElementById('backend-loading-banner');
+    if (!banner) return;
+    if (isLoading) {
+      banner.innerHTML = `
+        <div class="alert-banner-left">
+          <i data-lucide="refresh-cw"></i>
+          <span>Loading financial records from backend database...</span>
+        </div>
+      `;
+      banner.classList.remove('hidden');
+      refreshIcons();
+    } else {
+      banner.classList.add('hidden');
+      banner.innerHTML = '';
+    }
+  }
+
+  function showBackendError(message) {
+    state.backendError = message;
+    const banner = document.getElementById('backend-error-banner');
+    if (!banner) return;
+    banner.innerHTML = `
+      <div class="alert-banner-left">
+        <i data-lucide="alert-octagon"></i>
+        <span><strong>Backend Connection Error:</strong> ${escapeHtml(message)}</span>
+      </div>
+      <button type="button" class="alert-banner-link" id="btn-retry-backend">Retry</button>
+    `;
+    banner.classList.remove('hidden');
+    refreshIcons();
+    const retryBtn = document.getElementById('btn-retry-backend');
+    if (retryBtn) {
+      retryBtn.onclick = () => loadStateFromApi();
+    }
+  }
+
+  function clearBackendError() {
+    state.backendError = null;
+    const banner = document.getElementById('backend-error-banner');
+    if (banner) {
+      banner.classList.add('hidden');
+      banner.innerHTML = '';
+    }
+  }
+
+  /* -------------------------------------------------------------------------- */
+  /* API Data Layer & One-Time Migration (Requirements 25-28)                   */
+  /* -------------------------------------------------------------------------- */
+
+  async function migrateFromLocalStorageIfNeeded() {
+    const isMigrated = localStorage.getItem(STORAGE_KEYS.MIGRATED);
+    if (isMigrated === 'true') {
+      return 0;
+    }
+
+    const rawTx = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
+    const rawBudget = localStorage.getItem(STORAGE_KEYS.BUDGET);
+
+    let importedCount = 0;
+    let localTransactions = [];
+    if (rawTx) {
+      try {
+        localTransactions = JSON.parse(rawTx);
+      } catch (_) {}
+    }
+
+    // Import transactions if any exist in LocalStorage
+    if (Array.isArray(localTransactions) && localTransactions.length > 0) {
+      for (const tx of localTransactions) {
+        try {
+          const res = await fetch(`${API_BASE}/transactions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: tx.description || 'Transaction',
+              description: tx.description || '',
+              amount: Number(tx.amount),
+              category: tx.category,
+              type: tx.type,
+              date: tx.date,
+            }),
+          });
+          if (res.ok) importedCount++;
+        } catch (err) {
+          console.warn('Failed to migrate transaction:', tx, err);
         }
-        const parsedBudget = Number(rawBudget);
-        state.monthlyBudget = Number.isFinite(parsedBudget) && parsedBudget > 0 ? parsedBudget : 3200;
       }
-    } catch (_err) {
-      state.transactions = buildSeedTransactions();
-      state.monthlyBudget = 3200;
+    }
+
+    // Import budget if any exists in LocalStorage
+    if (rawBudget) {
+      const budgetNum = Number(rawBudget);
+      if (Number.isFinite(budgetNum) && budgetNum > 0) {
+        try {
+          const [y, m] = getTodayMonthKey().split('-').map(Number);
+          await fetch(`${API_BASE}/budgets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              year: y,
+              month: m,
+              amount: budgetNum,
+            }),
+          });
+        } catch (_) {}
+      }
+    }
+
+    // Set migration flag so this never runs again. Original LocalStorage data is preserved as backup.
+    localStorage.setItem(STORAGE_KEYS.MIGRATED, 'true');
+    if (importedCount > 0) {
+      showToast(`Imported ${importedCount} transactions from LocalStorage to backend database.`);
+    }
+    return importedCount;
+  }
+
+  async function fetchActiveMonthBudget() {
+    const [yearStr, monthStr] = state.activeMonth.split('-');
+    const y = parseInt(yearStr, 10);
+    const m = parseInt(monthStr, 10);
+
+    try {
+      const res = await fetch(`${API_BASE}/budgets/${y}/${m}`);
+      if (res.ok) {
+        const json = await res.json();
+        state.monthlyBudget = Number(json.data.amount);
+        state.currentBudgetId = json.data.id;
+      } else if (res.status === 404) {
+        state.monthlyBudget = 3200;
+        state.currentBudgetId = null;
+      }
+    } catch (err) {
+      console.warn('Could not load monthly budget from API:', err);
     }
   }
 
-  function saveTransactions() {
-    try {
-      localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(state.transactions));
-    } catch (_err) {
-      showToast('Unable to save changes to browser storage.', 'danger');
-    }
-  }
+  async function loadStateFromApi() {
+    showLoadingState(true);
+    clearBackendError();
 
-  function saveBudget() {
     try {
-      localStorage.setItem(STORAGE_KEYS.BUDGET, String(state.monthlyBudget));
-    } catch (_err) {
-      showToast('Unable to save budget to browser storage.', 'danger');
+      // 1. One-time migration if needed
+      await migrateFromLocalStorageIfNeeded();
+
+      // 2. Fetch all transactions from API
+      const txRes = await fetch(`${API_BASE}/transactions`);
+      if (!txRes.ok) {
+        throw new Error(`Failed to load transactions (HTTP ${txRes.status})`);
+      }
+      const txJson = await txRes.json();
+      state.transactions = Array.isArray(txJson.data) ? txJson.data : [];
+
+      // If database is completely empty on very first fresh run (no localstorage and no db records), seed sample dataset to API
+      if (state.transactions.length === 0 && !localStorage.getItem(STORAGE_KEYS.INITIALIZED)) {
+        const seed = buildSeedTransactions();
+        for (const item of seed) {
+          try {
+            await fetch(`${API_BASE}/transactions`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: item.description,
+                description: item.description,
+                amount: item.amount,
+                category: item.category,
+                type: item.type,
+                date: item.date,
+              }),
+            });
+          } catch (_) {}
+        }
+        const [y, m] = getTodayMonthKey().split('-').map(Number);
+        try {
+          await fetch(`${API_BASE}/budgets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ year: y, month: m, amount: 3200 }),
+          });
+        } catch (_) {}
+        localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
+
+        // Refetch after seed
+        const refetchRes = await fetch(`${API_BASE}/transactions`);
+        if (refetchRes.ok) {
+          const refetchJson = await refetchRes.json();
+          state.transactions = Array.isArray(refetchJson.data) ? refetchJson.data : [];
+        }
+      }
+
+      // 3. Fetch active month budget
+      await fetchActiveMonthBudget();
+
+      showLoadingState(false);
+      renderAll();
+    } catch (err) {
+      console.error('Failed to load state from API:', err);
+      showLoadingState(false);
+      showBackendError('Unable to connect to the backend server. Please verify the backend is running.');
     }
   }
 
@@ -531,7 +705,7 @@
 
     if (!rawAmount || !Number.isFinite(amount) || amount <= 0) {
       amountEl.setAttribute('aria-invalid', 'true');
-      document.getElementById(`${prefix}-amount-error`).textContent = 'Enter a valid amount greater than $0.00.';
+      document.getElementById(`${prefix}-amount-error`).textContent = 'Enter a valid amount greater than ₹0.00.';
       isValid = false;
     }
 
@@ -566,47 +740,117 @@
   }
 
   /* -------------------------------------------------------------------------- */
-  /* Transaction CRUD Operations                                                */
+  /* Transaction CRUD Operations via REST API                                   */
   /* -------------------------------------------------------------------------- */
 
-  function addTransaction(data) {
-    const newTx = {
-      id: generateId(),
-      ...data,
-    };
-    state.transactions.unshift(newTx);
-    saveTransactions();
+  async function addTransaction(data) {
+    showLoadingState(true);
+    clearBackendError();
+    try {
+      const res = await fetch(`${API_BASE}/transactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: data.description || 'Transaction',
+          description: data.description,
+          amount: data.amount,
+          category: data.category,
+          type: data.type,
+          date: data.date,
+        }),
+      });
 
-    const txMonth = newTx.date.slice(0, 7);
-    state.activeMonth = txMonth;
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP ${res.status}`);
+      }
 
-    renderAll();
-    showToast(`${newTx.type === 'income' ? 'Income' : 'Expense'} added (${formatCurrency(newTx.amount)}).`);
+      const json = await res.json();
+      const newTx = json.data;
+      state.transactions.unshift(newTx);
+
+      const txMonth = newTx.date.slice(0, 7);
+      if (state.activeMonth !== txMonth) {
+        state.activeMonth = txMonth;
+        await fetchActiveMonthBudget();
+      }
+
+      showLoadingState(false);
+      renderAll();
+      showToast(`${newTx.type === 'income' ? 'Income' : 'Expense'} added (${formatCurrency(newTx.amount)}).`);
+    } catch (err) {
+      showLoadingState(false);
+      showToast(`Failed to add transaction: ${err.message}`, 'danger');
+    }
   }
 
-  function updateTransaction(id, data) {
-    const idx = state.transactions.findIndex((t) => t.id === id);
-    if (idx === -1) return;
+  async function updateTransaction(id, data) {
+    showLoadingState(true);
+    clearBackendError();
+    try {
+      const res = await fetch(`${API_BASE}/transactions/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: data.description || 'Transaction',
+          description: data.description,
+          amount: data.amount,
+          category: data.category,
+          type: data.type,
+          date: data.date,
+        }),
+      });
 
-    state.transactions[idx] = { id, ...data };
-    saveTransactions();
-    renderAll();
-    showToast('Transaction updated.');
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP ${res.status}`);
+      }
+
+      const json = await res.json();
+      const updatedTx = json.data;
+      const idx = state.transactions.findIndex((t) => String(t.id) === String(id));
+      if (idx !== -1) {
+        state.transactions[idx] = updatedTx;
+      }
+
+      showLoadingState(false);
+      renderAll();
+      showToast('Transaction updated.');
+    } catch (err) {
+      showLoadingState(false);
+      showToast(`Failed to update transaction: ${err.message}`, 'danger');
+    }
   }
 
   function deleteTransaction(id) {
-    const tx = state.transactions.find((t) => t.id === id);
+    const tx = state.transactions.find((t) => String(t.id) === String(id));
     if (!tx) return;
 
     openConfirmDialog({
       title: 'Delete Transaction',
-      message: `Remove "${tx.description}" (${formatCurrency(tx.amount)}) from your ledger? This action cannot be undone.`,
+      message: `Remove "${tx.description || tx.title}" (${formatCurrency(tx.amount)}) from your ledger? This action cannot be undone.`,
       confirmLabel: 'Delete',
-      onConfirm: () => {
-        state.transactions = state.transactions.filter((t) => t.id !== id);
-        saveTransactions();
-        renderAll();
-        showToast('Transaction deleted.', 'warning');
+      onConfirm: async () => {
+        showLoadingState(true);
+        clearBackendError();
+        try {
+          const res = await fetch(`${API_BASE}/transactions/${id}`, {
+            method: 'DELETE',
+          });
+
+          if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.error || `HTTP ${res.status}`);
+          }
+
+          state.transactions = state.transactions.filter((t) => String(t.id) !== String(id));
+          showLoadingState(false);
+          renderAll();
+          showToast('Transaction deleted.', 'warning');
+        } catch (err) {
+          showLoadingState(false);
+          showToast(`Failed to delete transaction: ${err.message}`, 'danger');
+        }
       },
     });
   }
@@ -838,7 +1082,7 @@
             ticks: {
               color: '#64748b',
               font: { family: 'IBM Plex Mono', size: 11 },
-              callback: (v) => `$${Number(v).toLocaleString()}`,
+              callback: (v) => `₹${Number(v).toLocaleString('en-IN')}`,
             },
           },
         },
@@ -1206,7 +1450,7 @@
               ticks: {
                 color: '#64748b',
                 font: { family: 'IBM Plex Mono', size: 11 },
-                callback: (v) => `$${Number(v).toLocaleString()}`,
+                callback: (v) => `₹${Number(v).toLocaleString('en-IN')}`,
               },
             },
           },
@@ -1258,7 +1502,7 @@
               ticks: {
                 color: '#64748b',
                 font: { family: 'IBM Plex Mono', size: 11 },
-                callback: (v) => `$${Number(v).toLocaleString()}`,
+                callback: (v) => `₹${Number(v).toLocaleString('en-IN')}`,
               },
             },
             y: {
@@ -1498,7 +1742,7 @@
 
       const editBtn = e.target.closest('[data-edit-id]');
       if (editBtn) {
-        const tx = state.transactions.find((t) => t.id === editBtn.dataset.editId);
+        const tx = state.transactions.find((t) => String(t.id) === String(editBtn.dataset.editId));
         if (tx) openTransactionModal(tx);
         return;
       }
@@ -1515,8 +1759,9 @@
     document.getElementById('sidebar-backdrop').addEventListener('click', closeMobileSidebar);
 
     // Global month picker
-    document.getElementById('global-month-select').addEventListener('change', (e) => {
+    document.getElementById('global-month-select').addEventListener('change', async (e) => {
       state.activeMonth = e.target.value;
+      await fetchActiveMonthBudget();
       renderAll();
     });
 
@@ -1638,7 +1883,7 @@
     });
 
     // Budget Form & Presets
-    document.getElementById('budget-form').addEventListener('submit', (e) => {
+    document.getElementById('budget-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const input = document.getElementById('budget-amount-input');
       const errEl = document.getElementById('budget-amount-error');
@@ -1649,14 +1894,66 @@
 
       if (!input.value.trim() || !Number.isFinite(val) || val <= 0) {
         input.setAttribute('aria-invalid', 'true');
-        errEl.textContent = 'Enter a monthly budget greater than $0.';
+        errEl.textContent = 'Enter a monthly budget greater than ₹0.';
         return;
       }
 
-      state.monthlyBudget = Math.round(val * 100) / 100;
-      saveBudget();
-      renderAll();
-      showToast(`Monthly budget updated to ${formatCurrency(state.monthlyBudget)}.`);
+      const newLimit = Math.round(val * 100) / 100;
+      const [yearStr, monthStr] = state.activeMonth.split('-');
+      const y = parseInt(yearStr, 10);
+      const m = parseInt(monthStr, 10);
+
+      showLoadingState(true);
+      clearBackendError();
+      try {
+        if (state.currentBudgetId) {
+          const res = await fetch(`${API_BASE}/budgets/${state.currentBudgetId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: newLimit }),
+          });
+          if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.error || `HTTP ${res.status}`);
+          }
+          const json = await res.json();
+          state.monthlyBudget = Number(json.data.amount);
+        } else {
+          const res = await fetch(`${API_BASE}/budgets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ year: y, month: m, amount: newLimit }),
+          });
+          if (res.status === 409) {
+            const getRes = await fetch(`${API_BASE}/budgets/${y}/${m}`);
+            if (getRes.ok) {
+              const getJson = await getRes.json();
+              state.currentBudgetId = getJson.data.id;
+              const putRes = await fetch(`${API_BASE}/budgets/${state.currentBudgetId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ amount: newLimit }),
+              });
+              const putJson = await putRes.json();
+              state.monthlyBudget = Number(putJson.data.amount);
+            }
+          } else if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.error || `HTTP ${res.status}`);
+          } else {
+            const json = await res.json();
+            state.monthlyBudget = Number(json.data.amount);
+            state.currentBudgetId = json.data.id;
+          }
+        }
+
+        showLoadingState(false);
+        renderAll();
+        showToast(`Monthly budget updated to ${formatCurrency(state.monthlyBudget)}.`);
+      } catch (err) {
+        showLoadingState(false);
+        showToast(`Failed to update budget: ${err.message}`, 'danger');
+      }
     });
 
     document.querySelectorAll('[data-budget-preset]').forEach((btn) => {
@@ -1683,13 +1980,22 @@
       }
       openConfirmDialog({
         title: 'Clear All Transactions',
-        message: 'Delete every transaction stored in your browser? Your monthly budget limit will be preserved.',
+        message: 'Delete every transaction stored in your database? Your monthly budget limit will be preserved.',
         confirmLabel: 'Clear All',
-        onConfirm: () => {
-          state.transactions = [];
-          saveTransactions();
-          renderAll();
-          showToast('All transactions cleared.', 'warning');
+        onConfirm: async () => {
+          showLoadingState(true);
+          try {
+            for (const tx of [...state.transactions]) {
+              await fetch(`${API_BASE}/transactions/${tx.id}`, { method: 'DELETE' });
+            }
+            state.transactions = [];
+            showLoadingState(false);
+            renderAll();
+            showToast('All transactions cleared.', 'warning');
+          } catch (err) {
+            showLoadingState(false);
+            showToast('Failed to clear all transactions from database.', 'danger');
+          }
         },
       });
     });
@@ -1697,16 +2003,63 @@
     document.getElementById('btn-reset-demo').addEventListener('click', () => {
       openConfirmDialog({
         title: 'Reset Sample Data',
-        message: 'Replace current entries with the default 6-month sample financial dataset?',
+        message: 'Replace current entries with the default 6-month sample financial dataset in the backend database?',
         confirmLabel: 'Restore Sample Data',
-        onConfirm: () => {
-          state.transactions = buildSeedTransactions();
-          state.monthlyBudget = 3200;
-          state.activeMonth = getTodayMonthKey();
-          saveTransactions();
-          saveBudget();
-          renderAll();
-          showToast('Sample financial dataset restored.');
+        onConfirm: async () => {
+          showLoadingState(true);
+          try {
+            // Delete existing transactions
+            for (const tx of [...state.transactions]) {
+              await fetch(`${API_BASE}/transactions/${tx.id}`, { method: 'DELETE' });
+            }
+            // Seed 6-month sample transactions
+            const seed = buildSeedTransactions();
+            for (const item of seed) {
+              await fetch(`${API_BASE}/transactions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  title: item.description,
+                  description: item.description,
+                  amount: item.amount,
+                  category: item.category,
+                  type: item.type,
+                  date: item.date,
+                }),
+              });
+            }
+            state.activeMonth = getTodayMonthKey();
+            const [y, m] = state.activeMonth.split('-').map(Number);
+            if (state.currentBudgetId) {
+              await fetch(`${API_BASE}/budgets/${state.currentBudgetId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ amount: 3200 }),
+              });
+            } else {
+              const bRes = await fetch(`${API_BASE}/budgets`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ year: y, month: m, amount: 3200 }),
+              });
+              if (bRes.ok) {
+                const bJson = await bRes.json();
+                state.currentBudgetId = bJson.data.id;
+              }
+            }
+            state.monthlyBudget = 3200;
+
+            const txRes = await fetch(`${API_BASE}/transactions`);
+            const txJson = await txRes.json();
+            state.transactions = Array.isArray(txJson.data) ? txJson.data : [];
+
+            showLoadingState(false);
+            renderAll();
+            showToast('Sample financial dataset restored.');
+          } catch (err) {
+            showLoadingState(false);
+            showToast('Failed to reset sample data in database.', 'danger');
+          }
         },
       });
     });
@@ -1716,16 +2069,14 @@
   /* Bootstrap                                                                  */
   /* -------------------------------------------------------------------------- */
 
-  function init() {
-    loadStateFromStorage();
-
+  async function init() {
     // Initialize inline form defaults
     setSegmentedType('inline', 'expense');
     document.getElementById('inline-date').value = getTodayDateString();
     document.getElementById('modal-date').value = getTodayDateString();
 
     bindEvents();
-    renderAll();
+    await loadStateFromApi();
   }
 
   if (document.readyState === 'loading') {
