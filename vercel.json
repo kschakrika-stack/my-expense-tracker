@@ -1,16 +1,37 @@
 {
   "version": 2,
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "src/**,index.html"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/(.*)",
       "destination": "/api/index.js"
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/src/(.*)",
+      "destination": "/src/$1"
+    },
+    {
+      "source": "/",
       "destination": "/index.html"
     }
   ],
   "headers": [
+    {
+      "source": "/src/(.*\\.css)",
+      "headers": [
+        { "key": "Content-Type", "value": "text/css; charset=utf-8" }
+      ]
+    },
+    {
+      "source": "/src/(.*\\.js)",
+      "headers": [
+        { "key": "Content-Type", "value": "text/javascript; charset=utf-8" }
+      ]
+    },
     {
       "source": "/api/(.*)",
       "headers": [

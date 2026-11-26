@@ -64,9 +64,10 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(frontendDir, 'index.html'));
 });
 
-// Fallback to index.html for any other non-API GET requests (SPA support)
+// Fallback to index.html ONLY for extensionless routes (SPA routing)
+// Files with extensions (.css, .js, .png) will NOT return index.html
 app.use((req, res, next) => {
-  if (req.method === 'GET' && !req.path.startsWith('/api')) {
+  if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.includes('.')) {
     return res.sendFile(path.join(frontendDir, 'index.html'));
   }
   next();
