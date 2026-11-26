@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "ClearLedger — Personal Expense Tracker with Node.js + Express + SQLite backend",
   "private": true,
+  "bin": {
+    "vite": "./bin/vite.js"
+  },
   "engines": {
     "node": ">=20.x"
   },
