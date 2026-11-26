@@ -135,11 +135,11 @@
   function formatCurrency(amount) {
     const num = Number(amount) || 0;
     const abs = Math.abs(num);
-    const formatted = abs.toLocaleString('en-IN', {
+    const formatted = abs.toLocaleString('en-US', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
-    return num < 0 ? `-₹${formatted}` : `₹${formatted}`;
+    return num < 0 ? `-$${formatted}` : `$${formatted}`;
   }
 
   function generateId() {
@@ -705,7 +705,7 @@
 
     if (!rawAmount || !Number.isFinite(amount) || amount <= 0) {
       amountEl.setAttribute('aria-invalid', 'true');
-      document.getElementById(`${prefix}-amount-error`).textContent = 'Enter a valid amount greater than ₹0.00.';
+      document.getElementById(`${prefix}-amount-error`).textContent = 'Enter a valid amount greater than $0.00.';
       isValid = false;
     }
 
@@ -1082,7 +1082,7 @@
             ticks: {
               color: '#64748b',
               font: { family: 'IBM Plex Mono', size: 11 },
-              callback: (v) => `₹${Number(v).toLocaleString('en-IN')}`,
+              callback: (v) => `$${Number(v).toLocaleString()}`,
             },
           },
         },
@@ -1450,7 +1450,7 @@
               ticks: {
                 color: '#64748b',
                 font: { family: 'IBM Plex Mono', size: 11 },
-                callback: (v) => `₹${Number(v).toLocaleString('en-IN')}`,
+                callback: (v) => `$${Number(v).toLocaleString()}`,
               },
             },
           },
@@ -1502,7 +1502,7 @@
               ticks: {
                 color: '#64748b',
                 font: { family: 'IBM Plex Mono', size: 11 },
-                callback: (v) => `₹${Number(v).toLocaleString('en-IN')}`,
+                callback: (v) => `$${Number(v).toLocaleString()}`,
               },
             },
             y: {
@@ -1894,7 +1894,7 @@
 
       if (!input.value.trim() || !Number.isFinite(val) || val <= 0) {
         input.setAttribute('aria-invalid', 'true');
-        errEl.textContent = 'Enter a monthly budget greater than ₹0.';
+        errEl.textContent = 'Enter a monthly budget greater than $0.';
         return;
       }
 

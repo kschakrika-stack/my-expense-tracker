@@ -1,5 +1,5 @@
-// Vercel Serverless Function entry point
-// All requests are routed here by vercel.json and forwarded to the Express app.
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 const app = require('../backend/src/server');
 
-module.exports = app;
+export default app;
