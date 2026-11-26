@@ -1,33 +1,8 @@
 {
-  "version": 2,
-  "framework": null,
-  "outputDirectory": "public",
   "rewrites": [
     {
       "source": "/api/(.*)",
       "destination": "/api/index.js"
-    }
-  ],
-  "headers": [
-    {
-      "source": "/(.*\\.css)",
-      "headers": [
-        { "key": "Content-Type", "value": "text/css; charset=utf-8" }
-      ]
-    },
-    {
-      "source": "/(.*\\.js)",
-      "headers": [
-        { "key": "Content-Type", "value": "text/javascript; charset=utf-8" }
-      ]
-    },
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET,POST,PUT,DELETE,OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type,Authorization" }
-      ]
     }
   ]
 }

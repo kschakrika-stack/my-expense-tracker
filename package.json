@@ -8,8 +8,7 @@
   },
   "scripts": {
     "start": "node backend/src/server.js",
-    "dev": "nodemon backend/src/server.js",
-    "build": "echo 'No build step required'"
+    "dev": "nodemon backend/src/server.js"
   },
   "dependencies": {
     "cors": "^2.8.6",
