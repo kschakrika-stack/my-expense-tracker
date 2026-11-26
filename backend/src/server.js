@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -40,19 +41,36 @@ app.get('/api', (req, res) => {
 // JSON 404 handler for unknown /api endpoints
 app.use('/api', notFoundHandler);
 
-// Serve frontend static files when running as a standalone local server
-if (!process.env.VERCEL) {
-  const frontendDir = path.resolve(__dirname, '../..');
-  app.use(express.static(frontendDir));
+// Resolve frontend directory containing index.html and /src
+const possibleDirs = [
+  path.resolve(__dirname, '../..'),
+  path.resolve(__dirname, '../../..'),
+  process.cwd(),
+];
 
-  // Fallback to index.html for non-API GET requests (SPA support)
-  app.use((req, res, next) => {
-    if (req.method === 'GET' && !req.path.startsWith('/api')) {
-      return res.sendFile(path.join(frontendDir, 'index.html'));
-    }
-    next();
-  });
+let frontendDir = possibleDirs[0];
+for (const dir of possibleDirs) {
+  if (fs.existsSync(path.join(dir, 'index.html'))) {
+    frontendDir = dir;
+    break;
+  }
 }
+
+// Serve frontend static assets (styles.css, app.js, images, icons)
+app.use(express.static(frontendDir));
+
+// Serve index.html on root GET / (works on local server and Vercel)
+app.get('/', (req, res) => {
+  res.sendFile(path.join(frontendDir, 'index.html'));
+});
+
+// Fallback to index.html for any other non-API GET requests (SPA support)
+app.use((req, res, next) => {
+  if (req.method === 'GET' && !req.path.startsWith('/api')) {
+    return res.sendFile(path.join(frontendDir, 'index.html'));
+  }
+  next();
+});
 
 // Central error-handling middleware
 app.use(errorHandler);
