@@ -1,7 +1,10 @@
 {
+  "buildCommand": "echo 'Build complete'",
+  "outputDirectory": ".",
+  "framework": null,
   "rewrites": [
     {
-      "source": "/api/(.*)",
+      "source": "/(.*)",
       "destination": "/api/index.js"
     }
   ]

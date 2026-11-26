@@ -23,7 +23,7 @@ const PORT = parseInt(process.env.PORT, 10) || 3000;
 app.use(cors());
 app.use(express.json());
 
-// API Routes (mounted with and without /api prefix for Vercel rewrite compatibility)
+// API Routes
 app.use('/api/health', healthRoutes);
 app.use('/health', healthRoutes);
 
@@ -38,72 +38,80 @@ app.get('/api', (req, res) => {
   res.json({ success: true, message: 'Expense Tracker API is live' });
 });
 
+// Statically traceable asset paths (analyzed by Vercel NFT bundler at build time)
+const INDEX_HTML_PATH = path.join(__dirname, '../../index.html');
+const STYLES_CSS_PATH = path.join(__dirname, '../../src/styles.css');
+const APP_JS_PATH = path.join(__dirname, '../../src/app.js');
+
+// Pre-read frontend assets into memory
+let indexHtmlContent = '';
+let stylesCssContent = '';
+let appJsContent = '';
+
+try {
+  indexHtmlContent = fs.readFileSync(INDEX_HTML_PATH, 'utf8');
+} catch (e) {
+  console.warn('[Server] Notice: could not read index.html:', e.message);
+}
+
+try {
+  stylesCssContent = fs.readFileSync(STYLES_CSS_PATH, 'utf8');
+} catch (e) {
+  console.warn('[Server] Notice: could not read styles.css:', e.message);
+}
+
+try {
+  appJsContent = fs.readFileSync(APP_JS_PATH, 'utf8');
+} catch (e) {
+  console.warn('[Server] Notice: could not read app.js:', e.message);
+}
+
+// Explicit routes for frontend assets to guarantee correct Content-Type headers
+app.get('/', (req, res) => {
+  if (indexHtmlContent) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(indexHtmlContent);
+  }
+  if (fs.existsSync(INDEX_HTML_PATH)) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.sendFile(INDEX_HTML_PATH);
+  }
+  res.status(404).type('text/html').send('<!doctype html><h1>ClearLedger</h1><p>index.html not found</p>');
+});
+
+app.get('/src/styles.css', (req, res) => {
+  if (stylesCssContent) {
+    res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    return res.send(stylesCssContent);
+  }
+  if (fs.existsSync(STYLES_CSS_PATH)) {
+    res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    return res.sendFile(STYLES_CSS_PATH);
+  }
+  res.status(404).type('text/plain').send('/* styles.css not found */');
+});
+
+app.get('/src/app.js', (req, res) => {
+  if (appJsContent) {
+    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    return res.send(appJsContent);
+  }
+  if (fs.existsSync(APP_JS_PATH)) {
+    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    return res.sendFile(APP_JS_PATH);
+  }
+  res.status(404).type('text/plain').send('// app.js not found');
+});
+
 // JSON 404 handler for unknown /api endpoints
 app.use('/api', notFoundHandler);
 
-// Resolve frontend directory containing index.html and /src
-const searchDirs = [
-  path.resolve(__dirname, '../..'),
-  path.resolve(__dirname, '../../..'),
-  path.resolve(__dirname, '../../public'),
-  path.resolve(process.cwd()),
-  path.resolve(process.cwd(), 'public'),
-];
-
-function findAsset(subpath) {
-  for (const base of searchDirs) {
-    const candidate = path.join(base, subpath);
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-// Explicit route for CSS to guarantee proper MIME type
-app.get('/src/styles.css', (req, res) => {
-  const filePath = findAsset('src/styles.css');
-  if (filePath) {
-    res.setHeader('Content-Type', 'text/css; charset=utf-8');
-    return res.sendFile(filePath);
-  }
-  res.status(404).type('text/plain').send('styles.css not found');
-});
-
-// Explicit route for app.js to guarantee proper MIME type
-app.get('/src/app.js', (req, res) => {
-  const filePath = findAsset('src/app.js');
-  if (filePath) {
-    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
-    return res.sendFile(filePath);
-  }
-  res.status(404).type('text/plain').send('app.js not found');
-});
-
-// Serve static assets from all potential frontend locations
-for (const dir of searchDirs) {
-  if (fs.existsSync(dir)) {
-    app.use(express.static(dir));
-  }
-}
-
-// Serve index.html on root GET /
-app.get('/', (req, res) => {
-  const indexPath = findAsset('index.html');
-  if (indexPath) {
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    return res.sendFile(indexPath);
-  }
-  res.status(404).send('index.html not found');
-});
-
-// Fallback to index.html ONLY for extensionless routes (SPA routing)
+// Fallback to index.html for client-side SPA routing (only extensionless paths)
 app.use((req, res, next) => {
   if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.includes('.')) {
-    const indexPath = findAsset('index.html');
-    if (indexPath) {
+    if (indexHtmlContent) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.sendFile(indexPath);
+      return res.send(indexHtmlContent);
     }
   }
   next();
