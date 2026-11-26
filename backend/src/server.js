@@ -42,33 +42,69 @@ app.get('/api', (req, res) => {
 app.use('/api', notFoundHandler);
 
 // Resolve frontend directory containing index.html and /src
-const possibleDirs = [
+const searchDirs = [
   path.resolve(__dirname, '../..'),
   path.resolve(__dirname, '../../..'),
-  process.cwd(),
+  path.resolve(__dirname, '../../public'),
+  path.resolve(process.cwd()),
+  path.resolve(process.cwd(), 'public'),
 ];
 
-let frontendDir = possibleDirs[0];
-for (const dir of possibleDirs) {
-  if (fs.existsSync(path.join(dir, 'index.html'))) {
-    frontendDir = dir;
-    break;
+function findAsset(subpath) {
+  for (const base of searchDirs) {
+    const candidate = path.join(base, subpath);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+// Explicit route for CSS to guarantee proper MIME type
+app.get('/src/styles.css', (req, res) => {
+  const filePath = findAsset('src/styles.css');
+  if (filePath) {
+    res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    return res.sendFile(filePath);
+  }
+  res.status(404).type('text/plain').send('styles.css not found');
+});
+
+// Explicit route for app.js to guarantee proper MIME type
+app.get('/src/app.js', (req, res) => {
+  const filePath = findAsset('src/app.js');
+  if (filePath) {
+    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    return res.sendFile(filePath);
+  }
+  res.status(404).type('text/plain').send('app.js not found');
+});
+
+// Serve static assets from all potential frontend locations
+for (const dir of searchDirs) {
+  if (fs.existsSync(dir)) {
+    app.use(express.static(dir));
   }
 }
 
-// Serve frontend static assets (styles.css, app.js, images, icons)
-app.use(express.static(frontendDir));
-
-// Serve index.html on root GET / (works on local server and Vercel)
+// Serve index.html on root GET /
 app.get('/', (req, res) => {
-  res.sendFile(path.join(frontendDir, 'index.html'));
+  const indexPath = findAsset('index.html');
+  if (indexPath) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.sendFile(indexPath);
+  }
+  res.status(404).send('index.html not found');
 });
 
 // Fallback to index.html ONLY for extensionless routes (SPA routing)
-// Files with extensions (.css, .js, .png) will NOT return index.html
 app.use((req, res, next) => {
   if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.includes('.')) {
-    return res.sendFile(path.join(frontendDir, 'index.html'));
+    const indexPath = findAsset('index.html');
+    if (indexPath) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.sendFile(indexPath);
+    }
   }
   next();
 });
